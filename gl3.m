@@ -5,64 +5,32 @@
 #import "opengl_view.h"
 #import <math.h>
 
-/* we're now using a hardcoded texture */
-enum {
-	TEX_CHANS = 4,
-	TEX_W = 256,
-	TEX_H = 256,
+#define TextureName @"texture.png"
 
-	TEX_IN_W = TEX_W,
-	TEX_IN_H = TEX_H,
-	TEX_OUT_W = 512,
-	TEX_OUT_H = 256,
-};
-
-static struct RectInset {
-	unsigned left;
-	unsigned right;
-	unsigned top;
-	unsigned bottom;
-} TexInset = {
-	50, TEX_W - 128, 50, TEX_H - 128,
-};
-
-#define QuadSide 0.7f
-#define TEX_COUNT 1
-
-static GLfloat QuadData[] = {
-	//vertex coordinates
-	-QuadSide, -QuadSide, 0.0f,
-	QuadSide, -QuadSide, 0.0f,
-	QuadSide, QuadSide, 0.0f,
-	-QuadSide, QuadSide, 0.0f,
-
-	//colors
-	1, 0, 0,
-	0, 1, 0,
-	0, 0, 1,
-	1, 1, 1,
-
-	//texture coordinates
-	0, 0,
-	1, 0,
-	1, 1,
-	0, 1,
-};
+static const float QuadSide = 0.7f;
+#define QUAD(a, b) (b), (a), ((b) + 4), ((b) + 4), (a), ((a) + 4)
 
 static GLuint QuadIndices[] = {
-	0, 1, 2,
-	0, 2, 3,
+	QUAD(0, 1),
+	QUAD(1, 2),
+	QUAD(2, 3),
+	QUAD(4, 5),
+	QUAD(5, 6),
+	QUAD(6, 7),
+	QUAD(8, 9),
+	QUAD(9, 10),
+	QUAD(10, 11)
 };
 
-static const size_t VertexStride = 3;
-static const size_t ColorStride = 3;
+static const size_t NumVertices = 16;
+
+static const size_t CoordStride = 2;
 static const size_t TexCoordStride = 2;
 
-static const size_t NumVertices = 4;
-
 static const size_t CoordOffset = 0;
-static const size_t ColorOffset = CoordOffset + VertexStride * NumVertices;
-static const size_t TexCoordOffset = ColorOffset + ColorStride * NumVertices;
+static const size_t TexCoordOffset = CoordOffset + CoordStride * NumVertices;
+static const size_t QuadDataCount = TexCoordOffset + TexCoordStride * NumVertices;
+static const size_t QuadDataSize = QuadDataCount * sizeof(GLfloat);
 
 static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 
@@ -74,13 +42,13 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 	GLuint _vbo_idx;
 
 	GLuint _positionAttr;
-	GLuint _colorAttr;
 	GLuint _texCoordAttr;
-	GLuint _insetUniform;
-	GLuint _texInSizeUniform;
-	GLuint _texOutSizeUniform;
 
-	GLuint _textures[TEX_COUNT];
+	GLuint _texture;
+	CGSize _textureSize;
+	RectInset _insets;
+
+	GLfloat _quadData[QuadDataCount];
 }
 
 -(void)initializeContext
@@ -89,6 +57,8 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 	if (init) {
 		return;
 	}
+
+	memset(_quadData, 0, QuadDataSize);
 
 	ogl(glGenVertexArrays(1, &_vao));
 	ogl(glBindVertexArray(_vao));
@@ -116,14 +86,13 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 	ogl(glAttachShader(_programId, vert));
 
 	ogl(glBindAttribLocation(_programId, 0, "position"));
-	ogl(glBindAttribLocation(_programId, 1, "color"));
 	ogl(glBindAttribLocation(_programId, 2, "texcoord"));
 	ogl(glBindFragDataLocation(_programId, 0, "out_color"));
 
 	ogl(glLinkProgram(_programId));
 	ogl(oglProgramLog(_programId));
 
-	ogl(glGenTextures(3, _textures));
+	ogl(glGenTextures(1, &_texture));
 	
 	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 	ogl(glEnable(GL_DEPTH_TEST));
@@ -131,11 +100,7 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
     ogl(glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA));
 	
 	ogl(_positionAttr = glGetAttribLocation(_programId, "position"));
-	ogl(_colorAttr = glGetAttribLocation(_programId, "color"));
 	ogl(_texCoordAttr = glGetAttribLocation(_programId, "texcoord"));
-	ogl(_insetUniform = glGetUniformLocation(_programId, "insets"));
-	ogl(_texInSizeUniform = glGetUniformLocation(_programId, "texInSize"));
-	ogl(_texOutSizeUniform = glGetUniformLocation(_programId, "texOutSize"));
 
 	//XXX: fix this
 	init = 1;
@@ -145,47 +110,33 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 {
 	ogl(glUseProgram(_programId));
 	
-	GLuint texLoc[TEX_COUNT];
-	const char * const texNames[TEX_COUNT] = {
-		"texture_Y",
-	};
-	for (size_t i = 0; i < TEX_COUNT; i++) {
-		ogl(texLoc[i] = glGetUniformLocation(_programId, texNames[i]));
-		ogl(glUniform1i(texLoc[i], i));
-	}
+	GLuint texLoc;
+	ogl(texLoc = glGetUniformLocation(_programId, "texture_Y"));
+	ogl(glUniform1i(texLoc, 0));
 
-	ogl(glUniform4f(_insetUniform, TexInset.left, TexInset.right,
-		TexInset.top, TexInset.bottom));
-	ogl(glUniform2f(_texInSizeUniform, TEX_IN_W, TEX_IN_H));
-	ogl(glUniform2f(_texOutSizeUniform, TEX_OUT_W, TEX_OUT_H));
 	ogl(glBindVertexArray(_vao));
 
 	ogl(glBindBuffer(GL_ARRAY_BUFFER, _vbo));
 	ogl(glBufferData(GL_ARRAY_BUFFER,
-		sizeof(QuadData), QuadData, GL_STATIC_DRAW));
+		QuadDataSize, _quadData, GL_STATIC_DRAW));
 
 	ogl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _vbo_idx));
 	ogl(glBufferData(GL_ELEMENT_ARRAY_BUFFER,
 		sizeof(QuadIndices), QuadIndices, GL_STATIC_DRAW));
 
-	ogl(glVertexAttribPointer(_positionAttr, VertexStride,
+	ogl(glVertexAttribPointer(_positionAttr, CoordStride,
 		GL_FLOAT, GL_FALSE, 0,
 		(GLvoid*)(CoordOffset * sizeof(GLfloat))));
-	ogl(glVertexAttribPointer(_colorAttr, ColorStride,
-		GL_FLOAT, GL_FALSE, 0,
-		(GLvoid*)(ColorOffset * sizeof(GLfloat))));
 	ogl(glVertexAttribPointer(_texCoordAttr, TexCoordStride,
 		GL_FLOAT, GL_FALSE, 0,
 		(GLvoid*)(TexCoordOffset * sizeof(GLfloat))));
 
 	ogl(glEnableVertexAttribArray(_positionAttr));
-	ogl(glEnableVertexAttribArray(_colorAttr));
 	ogl(glEnableVertexAttribArray(_texCoordAttr));
 
 	ogl(glDrawElements(GL_TRIANGLES, NumIndices, GL_UNSIGNED_INT, 0));
 
 	ogl(glDisableVertexAttribArray(_texCoordAttr));
-	ogl(glDisableVertexAttribArray(_colorAttr));
 	ogl(glDisableVertexAttribArray(_positionAttr));
 
 	ogl(glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0));
@@ -214,7 +165,78 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 	[self unlockFocus];
 }
 
--(void)setTexture:(char*)data andWidth:(unsigned)width andHeight:(unsigned)height
+-(void)setInsets:(RectInset)insets
+{
+	_insets = insets;
+	const float width = self.frame.size.width;
+	const float height = self.frame.size.height;
+
+	const float TL = (_insets.left / _textureSize.width);
+	const float TR = (_insets.right / _textureSize.width);
+	const float TB = (_insets.bottom / _textureSize.height);
+	const float TT = (_insets.top / _textureSize.height);
+
+	const float SR = (_textureSize.width - _insets.right);
+	const float SB = (_textureSize.height - _insets.bottom);
+
+	const float OL = (_insets.left / width);
+	const float OR = ((width - SR) / width);
+	const float OB = ((height - SB) / height);
+	const float OT = (_insets.top / height);
+
+	GLfloat newQuadData[QuadDataCount] = {
+		0, 0,
+		OL, 0,
+		OR, 0,
+		1, 0,
+		0, OT,
+		OL, OT,
+		OR, OT,
+		1, OT,
+		0, OB,
+		OL, OB,
+		OR, OB,
+		1, OB,
+		0, 1,
+		OL, 1,
+		OR, 1,
+		1, 1,
+	
+		//texture coordinates
+		0, 0,
+		TL, 0,
+		TR, 0,
+		1, 0,
+		0, TT,
+		TL, TT,
+		TR, TT,
+		1, TT,
+		0, TB,
+		TL, TB,
+		TR, TB,
+		1, TB,
+		0, 1,
+		TL, 1,
+		TR, 1,
+		1, 1,
+	};
+
+	//flip Y coordinate and scale the quad (could be done statically
+	//at array initialization but leave it as is for readability)
+	size_t i;
+	for (i = 0; i < NumVertices * 2; i++) {
+		newQuadData[i] = (-1.0f + 2 * newQuadData[i]) * QuadSide;
+		if (i & 1) {
+			newQuadData[TexCoordOffset + i] = 1.0f - newQuadData[TexCoordOffset + i];
+		}
+	}
+
+	memcpy(_quadData, newQuadData, QuadDataSize);
+}
+
+-(void)setTexture:(char*)data andWidth:(unsigned)width
+	andHeight:(unsigned)height
+	withInsets:(RectInset)insets
 {
 	if ([self lockFocusIfCanDraw] == NO) {
 		return;
@@ -223,8 +245,8 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 	CGLLockContext(contextObj);
 
 	ogl(glActiveTexture(GL_TEXTURE0));
-	ogl(glBindTexture(GL_TEXTURE_2D, _textures[0]));
-		
+	ogl(glBindTexture(GL_TEXTURE_2D, _texture));
+
 	ogl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
 	ogl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
 	ogl(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
@@ -236,18 +258,23 @@ static const size_t NumIndices = sizeof(QuadIndices) / sizeof(QuadIndices[0]);
 		0, GL_RGBA,
 		GL_UNSIGNED_BYTE, data));
 
+	_textureSize = CGSizeMake(width, height);
+	[self setInsets:insets];
+
 	CGLUnlockContext(contextObj);
 	[self unlockFocus];
 }
+
 @end
 
 static void loadImage(id controller) {
-	NSImage *image = [[NSImage alloc] initWithContentsOfFile: @"texture.png"];
+	NSImage *image = [[NSImage alloc] initWithContentsOfFile: TextureName];
 	NSBitmapImageRep *repr = [[image representations] objectAtIndex: 0];
 
-	[[controller glView] setTexture: (char*)[repr bitmapData
-		]andWidth: (unsigned)[repr pixelsWide]
-		andHeight: (unsigned)[repr pixelsHigh]];
+	[[controller glView] setTexture: (char*)[repr bitmapData]
+		andWidth: (unsigned)[repr pixelsWide]
+		andHeight: (unsigned)[repr pixelsHigh]
+		withInsets: (RectInset){8, 236, 8, 26}];
 
 	[repr release];
 	[image release];
